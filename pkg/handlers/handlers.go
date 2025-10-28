@@ -22,11 +22,11 @@ type Policy struct {
 
 // EnforcementResult returns current usage and violation state after enforcement attempt.
 type EnforcementResult struct {
-	CurrentPods   int
-	CurrentCPU    string
-	CurrentMemory string
-	Violation     bool
-	Message       string
+	CurrentPods   int    `json:"currentPods"`
+	CurrentCPU    string `json:"currentCpu"`
+	CurrentMemory string `json:"currentMemory"`
+	Violation     bool   `json:"violation"`
+	Message       string `json:"message"`
 }
 
 // PodEnforcer enforces policies per namespace.

@@ -26,3 +26,18 @@ spec:
                   type: string
                 maxPods:
                   type: integer
+            status:
+              type: object
+              properties:
+                currentPods:
+                  type: integer
+                currentCpu:
+                  type: string
+                currentMemory:
+                  type: string
+                violationis:
+                  type: boolean
+                message:
+                  type: string
+                lastChecked:
+                  type: string
