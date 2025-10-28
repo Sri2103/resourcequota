@@ -1,0 +1,28 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: resourcequotapolicies.platform.example.com
+spec:
+  group: platform.example.com
+  names:
+    kind: ResourceQuotaPolicy
+    plural: resourcequotapolicies
+    singular: resourcequotapolicy
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                maxCPU:
+                  type: string
+                maxMemory:
+                  type: string
+                maxPods:
+                  type: integer
