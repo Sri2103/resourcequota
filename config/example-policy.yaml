@@ -1,0 +1,7 @@
+apiVersion: platform.example.com/v1alpha1
+kind: ResourceQuotaPolicy
+metadata:
+  name: ns1-policy
+  namespace: ns1
+spec:
+  maxPods: 3
