@@ -33,7 +33,7 @@ func main() {
 
 	enforcer := &handlers.PodEnforcer{
 		Client:      clientset,
-		PolicyCache: make(map[string]int),
+		PolicyCache: make(map[string]handlers.Policy),
 	}
 
 	ctrl := controller.NewController(clientset, dynamicClient, podInformer, nsInformer, enforcer)

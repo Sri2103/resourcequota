@@ -5,3 +5,5 @@ metadata:
   namespace: ns1
 spec:
   maxPods: 3
+  maxCPU: "500m"
+  maxMemory: "1Gi"

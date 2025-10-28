@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"log"
+	"time"
 
 	"github.com/sri2103/resource-quota-enforcer/pkg/handlers"
 	corev1 "k8s.io/api/core/v1"
@@ -39,6 +40,10 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 			log.Printf("[NS ADD] %s", ns.Name)
 			c.syncPolicy(ns.Name)
 		},
+		UpdateFunc: func(_, newObj interface{}) {
+			ns := newObj.(*corev1.Namespace)
+			c.syncPolicy(ns.Name)
+		},
 	})
 
 	c.podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -58,6 +63,21 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 
 	go c.nsInformer.Run(stopCh)
 	go c.podInformer.Run(stopCh)
+
+	// Periodic recheck every 60s
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				c.fullSync()
+			case <-stopCh:
+				return
+			}
+		}
+	}()
+
 	<-stopCh
 }
 
@@ -70,7 +90,7 @@ func (c *Controller) syncPolicy(namespace string) {
 
 	list, err := c.dynamicClient.Resource(gvr).Namespace(namespace).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
-		log.Printf("❌ Failed to list policies: %v", err)
+		log.Printf("❌ Failed to list policies for %s: %v", namespace, err)
 		return
 	}
 
@@ -79,9 +99,22 @@ func (c *Controller) syncPolicy(namespace string) {
 		if !found {
 			continue
 		}
-		if maxPods, ok := spec["maxPods"].(int64); ok {
-			c.enforcer.PolicyCache[namespace] = int(maxPods)
-			log.Printf("✅ Loaded policy for %s: maxPods=%d", namespace, maxPods)
-		}
+		policy := handlers.ParsePolicy(spec)
+		c.enforcer.PolicyCache[namespace] = policy
+		log.Printf("✅ Loaded policy for %s: %+v", namespace, policy)
+	}
+}
+
+func (c *Controller) fullSync() {
+	namespaces, err := c.clientset.CoreV1().Namespaces().List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		log.Printf("❌ Error listing namespaces: %v", err)
+		return
+	}
+
+	for _, ns := range namespaces.Items {
+		log.Printf("🔄 Syncing %s...", ns.Name)
+		c.syncPolicy(ns.Name)
+		c.enforcer.Enforce(ns.Name)
 	}
 }
