@@ -2,8 +2,10 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sort"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -11,41 +13,96 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+// Policy holds parsed values used for enforcement.
 type Policy struct {
 	MaxPods   int
 	MaxCPU    resource.Quantity
 	MaxMemory resource.Quantity
 }
 
+// EnforcementResult returns current usage and violation state after enforcement attempt.
+type EnforcementResult struct {
+	CurrentPods   int
+	CurrentCPU    string
+	CurrentMemory string
+	Violation     bool
+	Message       string
+}
+
+// PodEnforcer enforces policies per namespace.
 type PodEnforcer struct {
 	Client      *kubernetes.Clientset
 	PolicyCache map[string]Policy // namespace → policy
 }
 
-func (e *PodEnforcer) Enforce(namespace string) {
+// EnforceUntilOK enforces the policy by deleting pods until usage <= policy or maxIterations reached.
+// Returns final usage summary and whether violation still exists.
+func (e *PodEnforcer) EnforceUntilOK(namespace string, policy Policy) (EnforcementResult, error) {
+	maxIterations := 10 // safety limit
+	var lastErr error
+
+	for i := 0; i < maxIterations; i++ {
+		res, err := e.computeUsage(namespace, policy)
+		if err != nil {
+			return EnforcementResult{}, err
+		}
+
+		// if no violation -> we're done
+		if !res.Violation {
+			return res, nil
+		}
+
+		// if pods exceed -> delete oldest repeatedly until pods <= max
+		pods, err := e.Client.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{})
+		if err != nil {
+			lastErr = err
+			break
+		}
+		// If pod deletion required (either due to pod count or resource oversubscription), pick a deletion target.
+		target, ok := selectPodToDelete(pods.Items, res.Reason())
+		if !ok {
+			// nothing to delete => break
+			res.Message = "violation but no suitable pod to delete"
+			return res, nil
+		}
+
+		if delErr := e.Client.CoreV1().Pods(namespace).Delete(context.TODO(), target.Name, metav1.DeleteOptions{}); delErr != nil {
+			lastErr = delErr
+			log.Printf("failed to delete pod %s/%s: %v", namespace, target.Name, delErr)
+			// backoff before retry
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		log.Printf("Deleted %s/%s to enforce policy (iteration %d)", namespace, target.Name, i+1)
+		// small sleep to let API state converge
+		time.Sleep(400 * time.Millisecond)
+	}
+
+	// final check
+	final, err := e.computeUsage(namespace, policy)
+	if err != nil {
+		return EnforcementResult{}, err
+	}
+	return final, lastErr
+}
+
+// computeUsage returns an EnforcementResult describing current usage and whether it violates policy.
+// This function does not mutate cluster state.
+func (e *PodEnforcer) computeUsage(namespace string, policy Policy) (EnforcementResult, error) {
 	pods, err := e.Client.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
-		log.Printf("❌ Error listing pods in %s: %v", namespace, err)
-		return
+		return EnforcementResult{}, fmt.Errorf("list pods: %w", err)
 	}
 
-	policy, exists := e.PolicyCache[namespace]
-	if !exists {
-		return
-	}
-
-	// --- Enforce pod count ---
-	if len(pods.Items) > policy.MaxPods {
-		log.Printf("⚠️ Namespace %s exceeds Pod quota (%d/%d). Deleting oldest...", namespace, len(pods.Items), policy.MaxPods)
-		e.deleteOldestPod(namespace, pods.Items)
-		return
-	}
-
-	// --- Enforce CPU and Memory ---
 	totalCPU := resource.MustParse("0")
 	totalMem := resource.MustParse("0")
-
+	count := 0
 	for _, pod := range pods.Items {
+		// ignore completed pods
+		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+			continue
+		}
+		count++
 		for _, c := range pod.Spec.Containers {
 			if cpuReq, ok := c.Resources.Requests[corev1.ResourceCPU]; ok {
 				totalCPU.Add(cpuReq)
@@ -56,41 +113,67 @@ func (e *PodEnforcer) Enforce(namespace string) {
 		}
 	}
 
+	// check violations
+	violation := false
+	msg := ""
+	if count > policy.MaxPods {
+		violation = true
+		msg = fmt.Sprintf("pods:%d>max:%d", count, policy.MaxPods)
+	}
 	if totalCPU.Cmp(policy.MaxCPU) > 0 {
-		log.Printf("⚠️ Namespace %s exceeds CPU quota (%s/%s). Deleting newest pod...", namespace, totalCPU.String(), policy.MaxCPU.String())
-		e.deleteNewestPod(namespace, pods.Items)
+		violation = true
+		msg = fmt.Sprintf("cpu:%s>max:%s", totalCPU.String(), policy.MaxCPU.String())
 	}
-
 	if totalMem.Cmp(policy.MaxMemory) > 0 {
-		log.Printf("⚠️ Namespace %s exceeds Memory quota (%s/%s). Deleting newest pod...", namespace, totalMem.String(), policy.MaxMemory.String())
-		e.deleteNewestPod(namespace, pods.Items)
+		violation = true
+		msg = fmt.Sprintf("memory:%s>max:%s", totalMem.String(), policy.MaxMemory.String())
 	}
+
+	return EnforcementResult{
+		CurrentPods:   count,
+		CurrentCPU:    totalCPU.String(),
+		CurrentMemory: totalMem.String(),
+		Violation:     violation,
+		Message:       msg,
+	}, nil
 }
 
-func (e *PodEnforcer) deleteOldestPod(namespace string, pods []corev1.Pod) {
-	sort.Slice(pods, func(i, j int) bool {
-		return pods[i].CreationTimestamp.Before(&pods[j].CreationTimestamp)
-	})
-	target := pods[0]
-	err := e.Client.CoreV1().Pods(namespace).Delete(context.TODO(), target.Name, metav1.DeleteOptions{})
-	if err != nil {
-		log.Printf("❌ Failed to delete pod %s/%s: %v", namespace, target.Name, err)
-		return
+// selectPodToDelete chooses which pod to delete: oldest if pod count problem, newest if resource oversubscription.
+// returns (pod, true) if found, (zero, false) if none.
+func selectPodToDelete(pods []corev1.Pod, reason string) (corev1.Pod, bool) {
+	if len(pods) == 0 {
+		return corev1.Pod{}, false
 	}
-	log.Printf("🗑️ Deleted oldest pod %s/%s", namespace, target.Name)
-}
 
-func (e *PodEnforcer) deleteNewestPod(namespace string, pods []corev1.Pod) {
+	if reason == "pods" {
+		sort.Slice(pods, func(i, j int) bool {
+			return pods[i].CreationTimestamp.Before(&pods[j].CreationTimestamp)
+		})
+		return pods[0], true
+	}
+	// else delete newest
 	sort.Slice(pods, func(i, j int) bool {
 		return pods[i].CreationTimestamp.After(pods[j].CreationTimestamp.Time)
 	})
-	target := pods[0]
-	err := e.Client.CoreV1().Pods(namespace).Delete(context.TODO(), target.Name, metav1.DeleteOptions{})
-	if err != nil {
-		log.Printf("❌ Failed to delete pod %s/%s: %v", namespace, target.Name, err)
-		return
+	return pods[0], true
+}
+
+// Reason extracts short reason from EnforcementResult.Message (simple parse).
+func (r EnforcementResult) Reason() string {
+	// message format set above like "pods:12>max:10", "cpu:xxx>max:yyy", etc
+	if r.Message == "" {
+		return ""
 	}
-	log.Printf("🗑️ Deleted newest pod %s/%s", namespace, target.Name)
+	if len(r.Message) >= 4 && r.Message[:4] == "pods" {
+		return "pods"
+	}
+	if len(r.Message) >= 3 && r.Message[:3] == "cpu" {
+		return "cpu"
+	}
+	if len(r.Message) >= 6 && r.Message[:6] == "memory" {
+		return "memory"
+	}
+	return ""
 }
 
 func ParsePolicy(spec map[string]interface{}) Policy {

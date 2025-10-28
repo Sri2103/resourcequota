@@ -41,7 +41,7 @@ func main() {
 	stopCh := make(chan struct{})
 	sigterm := make(chan os.Signal, 1)
 	signal.Notify(sigterm, syscall.SIGINT, syscall.SIGTERM)
-	go ctrl.Run(stopCh)
+	go ctrl.Run(stopCh,5)
 
 	log.Println("Resource Quota Enforcer controller started 🚀")
 	<-sigterm

@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -13,108 +14,227 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/workqueue"
 )
 
 type Controller struct {
 	clientset     *kubernetes.Clientset
 	dynamicClient dynamic.Interface
-	podInformer   cache.SharedIndexInformer
-	nsInformer    cache.SharedIndexInformer
-	enforcer      *handlers.PodEnforcer
+
+	podInformer cache.SharedIndexInformer
+	nsInformer  cache.SharedIndexInformer
+
+	enforcer *handlers.PodEnforcer
+
+	queue workqueue.RateLimitingInterface
+
+	gvr schema.GroupVersionResource
 }
 
+// NewController constructs the controller.
 func NewController(clientset *kubernetes.Clientset, dynamicClient dynamic.Interface, podInformer, nsInformer cache.SharedIndexInformer, enforcer *handlers.PodEnforcer) *Controller {
+	q := workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "resource-quota-enforcer")
 	return &Controller{
 		clientset:     clientset,
 		dynamicClient: dynamicClient,
 		podInformer:   podInformer,
 		nsInformer:    nsInformer,
 		enforcer:      enforcer,
+		queue:         q,
+		gvr: schema.GroupVersionResource{
+			Group:    "platform.example.com",
+			Version:  "v1alpha1",
+			Resource: "resourcequotapolicies",
+		},
 	}
 }
 
-func (c *Controller) Run(stopCh <-chan struct{}) {
+// Run starts informers and worker goroutines. `workers` is how many goroutines process the queue.
+func (c *Controller) Run(stopCh <-chan struct{}, workers int) {
+	defer c.queue.ShutDown()
+
 	c.nsInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
-			ns := obj.(*corev1.Namespace)
-			log.Printf("[NS ADD] %s", ns.Name)
-			c.syncPolicy(ns.Name)
-		},
+		AddFunc: func(obj interface{}) { c.enqueueNamespace(obj) },
 		UpdateFunc: func(_, newObj interface{}) {
-			ns := newObj.(*corev1.Namespace)
-			c.syncPolicy(ns.Name)
+			c.enqueueNamespace(newObj)
+		},
+		DeleteFunc: func(obj interface{}) {
+			c.enqueueNamespace(obj)
 		},
 	})
 
 	c.podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
-			pod := obj.(*corev1.Pod)
-			c.enforcer.Enforce(pod.Namespace)
+			if pod, ok := obj.(*corev1.Pod); ok {
+				c.queue.AddRateLimited(pod.Namespace)
+			}
 		},
 		UpdateFunc: func(_, newObj interface{}) {
-			pod := newObj.(*corev1.Pod)
-			c.enforcer.Enforce(pod.Namespace)
+			if pod, ok := newObj.(*corev1.Pod); ok {
+				c.queue.AddRateLimited(pod.Namespace)
+			}
 		},
 		DeleteFunc: func(obj interface{}) {
-			pod := obj.(*corev1.Pod)
-			c.enforcer.Enforce(pod.Namespace)
+			if pod, ok := obj.(*corev1.Pod); ok {
+				c.queue.AddRateLimited(pod.Namespace)
+			}
 		},
 	})
 
 	go c.nsInformer.Run(stopCh)
 	go c.podInformer.Run(stopCh)
 
-	// Periodic recheck every 60s
+	// wait for caches to sync
+	if ok := cache.WaitForCacheSync(stopCh, c.nsInformer.HasSynced, c.podInformer.HasSynced); !ok {
+		log.Println("failed to wait for caches to sync")
+		return
+	}
+
+	// start workers
+	for i := 0; i < workers; i++ {
+		go func() {
+			for c.processNextItem() {
+			}
+		}()
+	}
+
+	// periodic full sync
 	go func() {
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				c.fullSync()
+				namespaces, err := c.clientset.CoreV1().Namespaces().List(context.TODO(), metav1.ListOptions{})
+				if err != nil {
+					log.Printf("fullSync list namespaces: %v", err)
+					continue
+				}
+				for _, ns := range namespaces.Items {
+					c.queue.AddRateLimited(ns.Name)
+				}
 			case <-stopCh:
+				fmt.Println("error occured here")
 				return
 			}
 		}
 	}()
 
 	<-stopCh
+	log.Println("controller stopping")
 }
 
-func (c *Controller) syncPolicy(namespace string) {
-	gvr := schema.GroupVersionResource{
-		Group:    "platform.example.com",
-		Version:  "v1alpha1",
-		Resource: "resourcequotapolicies",
-	}
-
-	list, err := c.dynamicClient.Resource(gvr).Namespace(namespace).List(context.TODO(), metav1.ListOptions{})
-	if err != nil {
-		log.Printf("❌ Failed to list policies for %s: %v", namespace, err)
+func (c *Controller) enqueueNamespace(obj interface{}) {
+	var nsName string
+	switch t := obj.(type) {
+	case *corev1.Namespace:
+		nsName = t.Name
+	case cache.DeletedFinalStateUnknown:
+		if ns, ok := t.Obj.(*corev1.Namespace); ok {
+			nsName = ns.Name
+		}
+	default:
+		// ignore
 		return
 	}
+	if nsName != "" {
+		c.queue.Add(nsName)
+	}
+}
 
+// processNextItem processes a single key from the queue.
+func (c *Controller) processNextItem() bool {
+	key, quit := c.queue.Get()
+	if quit {
+		return false
+	}
+	defer c.queue.Done(key)
+
+	nsName, ok := key.(string)
+	if !ok {
+		c.queue.Forget(key)
+		return true
+	}
+
+	if err := c.syncNamespace(nsName); err != nil {
+		// requeue with rate limiting on error
+		c.queue.AddRateLimited(nsName)
+		log.Printf("error syncing namespace %s: %v", nsName, err)
+	} else {
+		c.queue.Forget(nsName)
+	}
+	return true
+}
+
+// syncNamespace ensures policy cache for namespace and runs enforcement.
+// It also updates CRD status (if policy CR exists).
+func (c *Controller) syncNamespace(ns string) error {
+	// read CRs in namespace and update cache
+	list, err := c.dynamicClient.Resource(c.gvr).Namespace(ns).List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		// non-fatal; maybe CRD not installed or namespace has no policy
+		return fmt.Errorf("list CRs: %w", err)
+	}
+
+	// if multiple policies present, we take first for now (or extend later)
+	var lastPolicyName string
 	for _, item := range list.Items {
-		spec, found, _ := unstructured.NestedMap(item.Object, "spec")
-		if !found {
+		spec, found, err := unstructured.NestedMap(item.Object, "spec")
+		if err != nil || !found {
 			continue
 		}
-		policy := handlers.ParsePolicy(spec)
-		c.enforcer.PolicyCache[namespace] = policy
-		log.Printf("✅ Loaded policy for %s: %+v", namespace, policy)
+		p := handlers.ParsePolicy(spec)
+		c.enforcer.PolicyCache[ns] = p
+		lastPolicyName = item.GetName()
+
+		// Run enforcement until within limits.
+		enforced, err := c.enforcer.EnforceUntilOK(ns, p)
+		if err != nil {
+			log.Printf("enforce error for ns %s: %v", ns, err)
+		}
+
+		// update CR status for this policy
+		status := map[string]interface{}{
+			"currentPods":   enforced.CurrentPods,
+			"currentCPU":    enforced.CurrentCPU,
+			"currentMemory": enforced.CurrentMemory,
+			"violation":     enforced.Violation,
+			"message":       enforced.Message,
+			"lastChecked":   time.Now().Format(time.RFC3339),
+		}
+		if updateErr := c.updatePolicyStatus(ns, item.GetName(), status); updateErr != nil {
+			log.Printf("failed to update status for %s/%s: %v", ns, item.GetName(), updateErr)
+		}
 	}
+
+	// if no policy found in the namespace, delete from cache
+	if len(list.Items) == 0 {
+		delete(c.enforcer.PolicyCache, ns)
+	}
+
+	// if you want to also enforce namespaces even without CR, you could add default policies here.
+
+	_ = lastPolicyName
+	return nil
 }
 
-func (c *Controller) fullSync() {
-	namespaces, err := c.clientset.CoreV1().Namespaces().List(context.TODO(), metav1.ListOptions{})
+// updatePolicyStatus writes the status subresource for CRD. If API server doesn't support subresource, fallback to Update.
+func (c *Controller) updatePolicyStatus(namespace, name string, status map[string]interface{}) error {
+	// get object
+	obj, err := c.dynamicClient.Resource(c.gvr).Namespace(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	if err != nil {
-		log.Printf("❌ Error listing namespaces: %v", err)
-		return
+		return err
 	}
 
-	for _, ns := range namespaces.Items {
-		log.Printf("🔄 Syncing %s...", ns.Name)
-		c.syncPolicy(ns.Name)
-		c.enforcer.Enforce(ns.Name)
+	// if err := unstructured.SetNestedField(obj.Object, status, "status"); err != nil {
+	// 	return err
+	// }
+
+	_, err = c.dynamicClient.Resource(c.gvr).Namespace(namespace).UpdateStatus(context.TODO(), obj, metav1.UpdateOptions{})
+	if err == nil {
+		return nil
 	}
+	// fallback to Update if UpdateStatus not allowed
+	_, err = c.dynamicClient.Resource(c.gvr).Namespace(namespace).Update(context.TODO(), obj, metav1.UpdateOptions{})
+	return err
 }
