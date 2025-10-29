@@ -8,7 +8,10 @@ spec:
     kind: ResourceQuotaPolicy
     plural: resourcequotapolicies
     singular: resourcequotapolicy
+    shortNames:
+      - rqp
   scope: Namespaced
+
   versions:
     - name: v1alpha1
       served: true
