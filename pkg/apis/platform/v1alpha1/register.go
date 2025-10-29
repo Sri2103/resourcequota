@@ -25,7 +25,7 @@ var (
 )
 
 func addKnownTypes(scheme *runtime.Scheme) error {
-	scheme.AddKnownTypes(SchemaGroupVersion, &ResourceQuotaPolicyList{}, &ResourceQuotaPolicyList{})
+	scheme.AddKnownTypes(SchemaGroupVersion, &ResourceQuotaPolicy{}, &ResourceQuotaPolicyList{})
 	metav1.AddToGroupVersion(scheme, SchemaGroupVersion)
 	return nil
 }

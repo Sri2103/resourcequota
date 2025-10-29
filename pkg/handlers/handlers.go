@@ -41,7 +41,7 @@ func (e *PodEnforcer) EnforceUntilOK(namespace string, policy Policy) (Enforceme
 	maxIterations := 10 // safety limit
 	var lastErr error
 
-	for i := 0; i < maxIterations; i++ {
+	for i := range maxIterations {
 		res, err := e.computeUsage(namespace, policy)
 		if err != nil {
 			return EnforcementResult{}, err
