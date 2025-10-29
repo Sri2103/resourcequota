@@ -9,7 +9,6 @@ import (
 // ResourceQuotaPolicySpec defines the desired state
 type ResourceQuotaPolicySpec struct {
 	MaxPods     int    `json:"maxPods,omitempty"`
-	MaxServices int    `json:"maxServices,omitempty"`
 	MaxCPU      string `json:"maxCPU,omitempty"`
 	MaxMemory   string `json:"maxMemory,omitempty"`
 }
@@ -17,7 +16,6 @@ type ResourceQuotaPolicySpec struct {
 // ResourceQuotaPolicyStatus defines observed usage
 type ResourceQuotaPolicyStatus struct {
 	CurrentPods     int      `json:"currentPods,omitempty"`
-	CurrentServices int      `json:"currentServices,omitempty"`
 	CPUUsage        string   `json:"cpuUsage,omitempty"`
 	MemoryUsage     string   `json:"memoryUsage,omitempty"`
 	Violations      []string `json:"violations,omitempty"`

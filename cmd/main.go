@@ -10,6 +10,7 @@ import (
 	"github.com/sri2103/resource-quota-enforcer/pkg/controller"
 	"github.com/sri2103/resource-quota-enforcer/pkg/handlers"
 	"github.com/sri2103/resource-quota-enforcer/pkg/informers"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 func main() {
@@ -36,12 +37,14 @@ func main() {
 		PolicyCache: make(map[string]handlers.Policy),
 	}
 
-	ctrl := controller.NewController(clientset, dynamicClient, podInformer, nsInformer, enforcer)
+	scheme := runtime.NewScheme()
+
+	ctrl := controller.NewController(clientset, dynamicClient, podInformer, nsInformer, enforcer, scheme)
 
 	stopCh := make(chan struct{})
 	sigterm := make(chan os.Signal, 1)
 	signal.Notify(sigterm, syscall.SIGINT, syscall.SIGTERM)
-	go ctrl.Run(stopCh,5)
+	go ctrl.Run(stopCh, 5)
 
 	log.Println("Resource Quota Enforcer controller started 🚀")
 	<-sigterm

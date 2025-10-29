@@ -31,13 +31,16 @@ spec:
               properties:
                 currentPods:
                   type: integer
-                currentCpu:
+                cpuUsage:
                   type: string
-                currentMemory:
+                memoryUsage:
                   type: string
-                violationis:
-                  type: boolean
-                message:
-                  type: string
-                lastChecked:
-                  type: string
+                violations:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      message:
+                        type: string
+      subresources:
+        status: {}

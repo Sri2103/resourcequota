@@ -6,10 +6,12 @@ import (
 	"log"
 	"time"
 
+	"github.com/sri2103/resource-quota-enforcer/pkg/apis/platform/v1alpha1"
 	"github.com/sri2103/resource-quota-enforcer/pkg/handlers"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -25,6 +27,7 @@ type Controller struct {
 	nsInformer  cache.SharedIndexInformer
 
 	enforcer *handlers.PodEnforcer
+	scheme   *runtime.Scheme
 
 	queue workqueue.RateLimitingInterface
 
@@ -32,8 +35,10 @@ type Controller struct {
 }
 
 // NewController constructs the controller.
-func NewController(clientset *kubernetes.Clientset, dynamicClient dynamic.Interface, podInformer, nsInformer cache.SharedIndexInformer, enforcer *handlers.PodEnforcer) *Controller {
+func NewController(clientset *kubernetes.Clientset, dynamicClient dynamic.Interface, podInformer, nsInformer cache.SharedIndexInformer, enforcer *handlers.PodEnforcer, scheme *runtime.Scheme) *Controller {
 	q := workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "resource-quota-enforcer")
+	v1alpha1.AddToScheme(scheme)
+
 	return &Controller{
 		clientset:     clientset,
 		dynamicClient: dynamicClient,
@@ -176,12 +181,17 @@ func (c *Controller) syncNamespace(ns string) error {
 		return fmt.Errorf("list CRs: %w", err)
 	}
 
+	if len(list.Items) == 0 {
+		delete(c.enforcer.PolicyCache, ns)
+		return nil
+	}
+
 	// if multiple policies present, we take first for now (or extend later)
 	var lastPolicyName string
 	for _, item := range list.Items {
 		spec, found, err := unstructured.NestedMap(item.Object, "spec")
 		if err != nil || !found {
-			continue
+			return err
 		}
 		p := handlers.ParsePolicy(spec)
 		c.enforcer.PolicyCache[ns] = p
@@ -191,26 +201,37 @@ func (c *Controller) syncNamespace(ns string) error {
 		enforced, err := c.enforcer.EnforceUntilOK(ns, p)
 		if err != nil {
 			log.Printf("enforce error for ns %s: %v", ns, err)
+			return err
 		}
 
 		// update CR status for this policy
-		status := map[string]interface{}{
-			"currentPods":   enforced.CurrentPods,
-			"currentCPU":    enforced.CurrentCPU,
-			"currentMemory": enforced.CurrentMemory,
-			"violation":     enforced.Violation,
-			"message":       enforced.Message,
-			"lastChecked":   time.Now().Format(time.RFC3339),
+		// status := map[string]interface{}{
+		// 	"currentPods":   enforced.CurrentPods,
+		// 	"currentCPU":    enforced.CurrentCPU,
+		// 	"currentMemory": enforced.CurrentMemory,
+		// 	"violation":     enforced.Violation,
+		// 	"message":       enforced.Message,
+		// 	"lastChecked":   time.Now().Format(time.RFC3339),
+		// }
+
+		qstatus := v1alpha1.ResourceQuotaPolicyStatus{
+			CurrentPods: enforced.CurrentPods,
+			CPUUsage:    enforced.CurrentCPU,
+			MemoryUsage: enforced.CurrentMemory,
+			Violations:  []string{enforced.Message},
 		}
-		if updateErr := c.updatePolicyStatus(ns, item.GetName(), status); updateErr != nil {
+		statusMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&qstatus)
+		if err != nil {
+			log.Printf("failed to convert status for %s/%s: %v", ns, item.GetName(), err)
+			return err
+		}
+		if updateErr := c.updatePolicyStatus(ns, item.GetName(), statusMap); updateErr != nil {
 			log.Printf("failed to update status for %s/%s: %v", ns, item.GetName(), updateErr)
+			return updateErr
 		}
 	}
 
 	// if no policy found in the namespace, delete from cache
-	if len(list.Items) == 0 {
-		delete(c.enforcer.PolicyCache, ns)
-	}
 
 	// if you want to also enforce namespaces even without CR, you could add default policies here.
 
@@ -226,9 +247,9 @@ func (c *Controller) updatePolicyStatus(namespace, name string, status map[strin
 		return err
 	}
 
-	// if err := unstructured.SetNestedField(obj.Object, status, "status"); err != nil {
-	// 	return err
-	// }
+	if err := unstructured.SetNestedField(obj.Object, status, "status"); err != nil {
+		return err
+	}
 
 	_, err = c.dynamicClient.Resource(c.gvr).Namespace(namespace).UpdateStatus(context.TODO(), obj, metav1.UpdateOptions{})
 	if err == nil {
