@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/sri2103/resource-quota-enforcer/pkg/apis/platform/v1alpha1"
@@ -31,7 +32,8 @@ type Controller struct {
 
 	queue workqueue.RateLimitingInterface
 
-	gvr schema.GroupVersionResource
+	gvr       schema.GroupVersionResource
+	cacheLock sync.RWMutex
 }
 
 // NewController constructs the controller.
@@ -174,68 +176,70 @@ func (c *Controller) processNextItem() bool {
 // syncNamespace ensures policy cache for namespace and runs enforcement.
 // It also updates CRD status (if policy CR exists).
 func (c *Controller) syncNamespace(ns string) error {
-	// read CRs in namespace and update cache
+	// List CRs in the namespace
 	list, err := c.dynamicClient.Resource(c.gvr).Namespace(ns).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		// non-fatal; maybe CRD not installed or namespace has no policy
 		return fmt.Errorf("list CRs: %w", err)
 	}
 
+	// If no policies exist, clear cache for this namespace
 	if len(list.Items) == 0 {
+		c.cacheLock.Lock()
 		delete(c.enforcer.PolicyCache, ns)
+		c.cacheLock.Unlock()
 		return nil
 	}
 
-	// if multiple policies present, we take first for now (or extend later)
-	var lastPolicyName string
+	// Use first policy (extend later for multiple)
 	for _, item := range list.Items {
 		spec, found, err := unstructured.NestedMap(item.Object, "spec")
-		if err != nil || !found {
-			return err
+		if err != nil {
+			return fmt.Errorf("reading spec for %s/%s: %w", ns, item.GetName(), err)
 		}
-		p := handlers.ParsePolicy(spec)
-		c.enforcer.PolicyCache[ns] = p
-		lastPolicyName = item.GetName()
+		if !found {
+			continue
+		}
 
-		// Run enforcement until within limits.
+		// Parse policy from spec
+		p := handlers.ParsePolicy(spec)
+
+		// Update in-memory cache safely
+		c.cacheLock.Lock()
+		c.enforcer.PolicyCache[ns] = p
+		c.cacheLock.Unlock()
+
+		// Run enforcement logic
 		enforced, err := c.enforcer.EnforceUntilOK(ns, p)
 		if err != nil {
 			log.Printf("enforce error for ns %s: %v", ns, err)
 			return err
 		}
 
-		// update CR status for this policy
-		// status := map[string]interface{}{
-		// 	"currentPods":   enforced.CurrentPods,
-		// 	"currentCPU":    enforced.CurrentCPU,
-		// 	"currentMemory": enforced.CurrentMemory,
-		// 	"violation":     enforced.Violation,
-		// 	"message":       enforced.Message,
-		// 	"lastChecked":   time.Now().Format(time.RFC3339),
-		// }
-
+		// Prepare status update
 		qstatus := v1alpha1.ResourceQuotaPolicyStatus{
 			CurrentPods: enforced.CurrentPods,
 			CPUUsage:    enforced.CurrentCPU,
 			MemoryUsage: enforced.CurrentMemory,
 			Violations:  []string{enforced.Message},
 		}
+
 		statusMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&qstatus)
 		if err != nil {
 			log.Printf("failed to convert status for %s/%s: %v", ns, item.GetName(), err)
 			return err
 		}
+
+		// Update status in CR
 		if updateErr := c.updatePolicyStatus(ns, item.GetName(), statusMap); updateErr != nil {
 			log.Printf("failed to update status for %s/%s: %v", ns, item.GetName(), updateErr)
 			return updateErr
 		}
+
+		// currently handle one CR per namespace (break if multiple)
+		break
 	}
 
-	// if no policy found in the namespace, delete from cache
-
-	// if you want to also enforce namespaces even without CR, you could add default policies here.
-
-	_ = lastPolicyName
 	return nil
 }
 
