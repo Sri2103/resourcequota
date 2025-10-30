@@ -64,3 +64,7 @@ docker run --rm -v ${PWD}:/workspace -w /workspace golang:1.24 bash -c '
   go install k8s.io/code-generator/cmd/...@latest
   bash hack/update-codegen.sh
 '
+
+
+
+docker run --rm -v "${PWD}:/workspace" -w /workspace codegen:go1.24  hack/update-codegen.sh

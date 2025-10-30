@@ -26,9 +26,9 @@ fi
 source "${CODEGEN_PKG}/kube_codegen.sh"
 
 # run helpers & client generation
-# kube::codegen::gen_helpers \
-#   --boilerplate "${SCRIPT_ROOT}/hack/boilerplate.go.txt" \
-#   .
+kube::codegen::gen_helpers \
+  --boilerplate "${SCRIPT_ROOT}/hack/boilerplate.go.txt" \
+  .
 
 echo "${OUTPUT_DIR}"
 
