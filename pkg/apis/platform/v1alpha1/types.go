@@ -8,17 +8,17 @@ import (
 
 // ResourceQuotaPolicySpec defines the desired state
 type ResourceQuotaPolicySpec struct {
-	MaxPods     int    `json:"maxPods,omitempty"`
-	MaxCPU      string `json:"maxCPU,omitempty"`
-	MaxMemory   string `json:"maxMemory,omitempty"`
+	MaxPods   int    `json:"maxPods,omitempty"`
+	MaxCPU    string `json:"maxCPU,omitempty"`
+	MaxMemory string `json:"maxMemory,omitempty"`
 }
 
 // ResourceQuotaPolicyStatus defines observed usage
 type ResourceQuotaPolicyStatus struct {
-	CurrentPods     int      `json:"currentPods,omitempty"`
-	CPUUsage        string   `json:"cpuUsage,omitempty"`
-	MemoryUsage     string   `json:"memoryUsage,omitempty"`
-	Violations      []string `json:"violations,omitempty"`
+	CurrentPods int      `json:"currentPods,omitempty"`
+	CPUUsage    string   `json:"cpuUsage,omitempty"`
+	MemoryUsage string   `json:"memoryUsage,omitempty"`
+	Violations  []string `json:"violations,omitempty"`
 }
 
 // +genclient

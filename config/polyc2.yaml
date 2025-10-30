@@ -1,0 +1,9 @@
+apiVersion: platform.example.com/v1alpha1
+kind: ResourceQuotaPolicy
+metadata:
+  name: ns2-policy
+  namespace: ns2
+spec:
+  maxPods: 3
+  maxCPU: "300m"
+  maxMemory: "800Mb"
