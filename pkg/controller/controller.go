@@ -10,6 +10,8 @@ import (
 	"github.com/sri2103/resource-quota-enforcer/pkg/apis/platform/v1alpha1"
 	"github.com/sri2103/resource-quota-enforcer/pkg/generated/clientset/versioned"
 	"github.com/sri2103/resource-quota-enforcer/pkg/handlers"
+	"github.com/sri2103/resource-quota-enforcer/pkg/health"
+	metrics "github.com/sri2103/resource-quota-enforcer/pkg/metrics"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -100,11 +102,12 @@ func (c *Controller) Run(stopCh <-chan struct{}, workers int) {
 	go c.nsInformer.Run(stopCh)
 	go c.podInformer.Run(stopCh)
 
-	// 3️⃣ Wait for caches to sync before starting workers
 	if ok := cache.WaitForCacheSync(stopCh, c.nsInformer.HasSynced, c.podInformer.HasSynced); !ok {
 		log.Println("[Controller] ❌ Failed to sync caches, exiting...")
 		return
 	}
+
+	health.SetReady()
 
 	// 4️⃣ Start worker goroutines
 	log.Printf("[Controller] Starting %d workers...", workers)
@@ -250,7 +253,9 @@ func (c *Controller) syncHandler(ctx context.Context, ns string) error {
 
 		// Step 3: Enforce policy
 		enforced, err := c.enforcer.EnforceUntilOK(ns, policy)
+		metrics.ReconcileTotal.WithLabelValues("pod", ns).Inc()
 		if err != nil {
+			metrics.ReconcileErrors.WithLabelValues("pod", ns).Inc()
 			klog.Errorf("enforce error for namespace %s: %v", ns, err)
 			// 🔹 Record a failure event if enforcement failed
 			c.recorder.Eventf(
