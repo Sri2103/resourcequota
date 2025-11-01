@@ -38,12 +38,9 @@ spec:
                   type: string
                 memoryUsage:
                   type: string
-                violations:
-                  type: array
-                  items:
-                    type: object
-                    properties:
-                      message:
-                        type: string
+                violation:
+                  type: boolean
+                message:
+                  type: string
       subresources:
         status: {}

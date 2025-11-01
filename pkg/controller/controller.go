@@ -8,22 +8,23 @@ import (
 	"time"
 
 	"github.com/sri2103/resource-quota-enforcer/pkg/apis/platform/v1alpha1"
+	"github.com/sri2103/resource-quota-enforcer/pkg/generated/clientset/versioned"
 	"github.com/sri2103/resource-quota-enforcer/pkg/handlers"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	v1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 )
 
 type Controller struct {
-	clientset     *kubernetes.Clientset
-	dynamicClient dynamic.Interface
+	clientset kubernetes.Interface
+	CRclient  versioned.Interface
+	recorder  record.EventRecorder
 
 	podInformer cache.SharedIndexInformer
 	nsInformer  cache.SharedIndexInformer
@@ -31,29 +32,33 @@ type Controller struct {
 	enforcer *handlers.PodEnforcer
 	scheme   *runtime.Scheme
 
-	queue workqueue.RateLimitingInterface
-
-	gvr       schema.GroupVersionResource
+	queue     workqueue.TypedRateLimitingInterface[any]
 	cacheLock sync.RWMutex
 }
 
 // NewController constructs the controller.
-func NewController(clientset *kubernetes.Clientset, dynamicClient dynamic.Interface, podInformer, nsInformer cache.SharedIndexInformer, enforcer *handlers.PodEnforcer, scheme *runtime.Scheme) *Controller {
-	q := workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "resource-quota-enforcer")
-	v1alpha1.AddToScheme(scheme)
+func NewController(clientset kubernetes.Interface, dynamicClient versioned.Interface, podInformer, nsInformer cache.SharedIndexInformer, enforcer *handlers.PodEnforcer, scheme *runtime.Scheme) *Controller {
+	q := workqueue.
+		NewNamedRateLimitingQueue(
+			workqueue.DefaultTypedItemBasedRateLimiter[any](),
+			"resource-quota-enforcer",
+		)
+	v1alpha1.Install(scheme)
+	rec := record.NewBroadcaster()
+	rec.StartRecordingToSink(&v1.EventSinkImpl{
+		Interface: clientset.CoreV1().Events(""),
+	})
+
+	recorder := rec.NewRecorder(scheme, corev1.EventSource{Component: "resourcequotapolicy-controller"})
 
 	return &Controller{
-		clientset:     clientset,
-		dynamicClient: dynamicClient,
-		podInformer:   podInformer,
-		nsInformer:    nsInformer,
-		enforcer:      enforcer,
-		queue:         q,
-		gvr: schema.GroupVersionResource{
-			Group:    "platform.example.com",
-			Version:  "v1alpha1",
-			Resource: "resourcequotapolicies",
-		},
+		clientset:   clientset,
+		CRclient:    dynamicClient,
+		podInformer: podInformer,
+		nsInformer:  nsInformer,
+		enforcer:    enforcer,
+		queue:       q,
+		recorder:    recorder,
 	}
 }
 
@@ -163,6 +168,7 @@ func (c *Controller) enqueueNamespace(obj interface{}) {
 
 // processNextItem processes a single key from the queue.
 func (c *Controller) processNextItem() bool {
+	ctx := context.TODO()
 	obj, shutdown := c.queue.Get()
 	if shutdown {
 		return false
@@ -184,7 +190,7 @@ func (c *Controller) processNextItem() bool {
 				err = fmt.Errorf("panic: %v", r)
 			}
 		}()
-		return c.syncNamespace(ns)
+		return c.syncHandler(ctx, ns)
 	}()
 	if err != nil {
 		// Retry with rate limit
@@ -199,13 +205,17 @@ func (c *Controller) processNextItem() bool {
 	return true
 }
 
-// syncNamespace ensures policy cache for namespace and runs enforcement.
+// syncHandler ensures policy cache for namespace and runs enforcement.
+// core reconciler logic
 // It also updates CRD status (if policy CR exists).
-func (c *Controller) syncNamespace(ns string) error {
+func (c *Controller) syncHandler(ctx context.Context, ns string) error {
 	klog.V(4).Infof("Reconciling namespace: %s", ns)
 
 	// Step 1: List all CRs in this namespace
-	list, err := c.dynamicClient.Resource(c.gvr).Namespace(ns).List(context.TODO(), metav1.ListOptions{})
+	list, err := c.CRclient.
+		PlatformV1alpha1().
+		ResourceQuotaPolicies(ns).
+		List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("list CRs: %w", err)
 	}
@@ -220,48 +230,61 @@ func (c *Controller) syncNamespace(ns string) error {
 
 	// Step 2: Process each CR (you can later extend for multiple)
 	for _, item := range list.Items {
-		spec, found, err := unstructured.NestedMap(item.Object, "spec")
-		if err != nil {
-			klog.Errorf("error reading spec for %s/%s: %v", ns, item.GetName(), err)
-			continue
-		}
-		if !found {
-			klog.Warningf("no spec found in %s/%s", ns, item.GetName())
-			continue
-		}
 
-		policy := handlers.ParsePolicy(spec)
+		spec := item.Spec
+
+		policy := handlers.ParsePolicy(&spec)
 
 		// Update cache
 		c.cacheLock.Lock()
 		c.enforcer.PolicyCache[ns] = policy
 		c.cacheLock.Unlock()
 
+		// record event:
+		c.recorder.Eventf(
+			&item,
+			corev1.EventTypeNormal,
+			"ReconcileStarted",
+			"Started reconciling ResourceQuotaPolicy %s", item.Name,
+		)
+
 		// Step 3: Enforce policy
 		enforced, err := c.enforcer.EnforceUntilOK(ns, policy)
 		if err != nil {
 			klog.Errorf("enforce error for namespace %s: %v", ns, err)
+			// 🔹 Record a failure event if enforcement failed
+			c.recorder.Eventf(
+				&item,
+				corev1.EventTypeWarning,
+				"EnforcementFailed",
+				"Failed to enforce policy %s: %v", item.Name, err.Error(),
+			)
 			continue
 		}
 
 		// Step 4: Update status
-		status := v1alpha1.ResourceQuotaPolicyStatus{
+		status := &v1alpha1.ResourceQuotaPolicyStatus{
 			CurrentPods: enforced.CurrentPods,
 			CPUUsage:    enforced.CurrentCPU,
 			MemoryUsage: enforced.CurrentMemory,
-			Violations:  []string{enforced.Message},
+			Violation:   enforced.Violation,
+			Message:     enforced.Message,
 		}
 
-		statusMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&status)
-		if err != nil {
-			klog.Errorf("failed to convert status for %s/%s: %v", ns, item.GetName(), err)
-			continue
-		}
-
-		if err := c.updatePolicyStatus(ns, item.GetName(), statusMap); err != nil {
+		if cr, err := c.updatePolicyStatus(ctx, ns, item.GetName(), status); err != nil {
 			klog.Errorf("failed to update status for %s/%s: %v", ns, item.GetName(), err)
 			continue
+		} else {
+			log.Printf("status of the updated: %v", cr.Status)
 		}
+
+		c.recorder.Eventf(
+			&item,
+			corev1.EventTypeNormal,
+			"ReconcileSucceeded",
+			"Successfully enforced ResourceQuotaPolicy %s", item.Name,
+		)
+
 	}
 
 	klog.V(3).Infof("Finished syncing namespace %s", ns)
@@ -269,22 +292,22 @@ func (c *Controller) syncNamespace(ns string) error {
 }
 
 // updatePolicyStatus writes the status subresource for CRD. If API server doesn't support subresource, fallback to Update.
-func (c *Controller) updatePolicyStatus(namespace, name string, status map[string]interface{}) error {
+func (c *Controller) updatePolicyStatus(ctx context.Context, namespace, name string, status *v1alpha1.ResourceQuotaPolicyStatus) (*v1alpha1.ResourceQuotaPolicy, error) {
 	// get object
-	obj, err := c.dynamicClient.Resource(c.gvr).Namespace(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+	obj, err := c.CRclient.
+		PlatformV1alpha1().
+		ResourceQuotaPolicies(namespace).
+		Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	if err := unstructured.SetNestedField(obj.Object, status, "status"); err != nil {
-		return err
-	}
+	obj.Status = *status
 
-	_, err = c.dynamicClient.Resource(c.gvr).Namespace(namespace).UpdateStatus(context.TODO(), obj, metav1.UpdateOptions{})
-	if err == nil {
-		return nil
-	}
 	// fallback to Update if UpdateStatus not allowed
-	_, err = c.dynamicClient.Resource(c.gvr).Namespace(namespace).Update(context.TODO(), obj, metav1.UpdateOptions{})
-	return err
+	cr, err := c.CRclient.
+		PlatformV1alpha1().
+		ResourceQuotaPolicies(namespace).
+		UpdateStatus(ctx, obj, metav1.UpdateOptions{})
+	return cr, err
 }

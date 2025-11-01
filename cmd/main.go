@@ -8,6 +8,7 @@ import (
 
 	"github.com/sri2103/resource-quota-enforcer/pkg/client"
 	"github.com/sri2103/resource-quota-enforcer/pkg/controller"
+	platformv1alpha1 "github.com/sri2103/resource-quota-enforcer/pkg/generated/clientset/versioned"
 	"github.com/sri2103/resource-quota-enforcer/pkg/handlers"
 	"github.com/sri2103/resource-quota-enforcer/pkg/informers"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -23,7 +24,13 @@ func main() {
 		log.Fatalf("Error building client: %v", err)
 	}
 
-	dynamicClient, err := client.DynamicClient(config)
+	// dynamicClient, err := client.DynamicClient(config)
+	// if err != nil {
+	// 	log.Fatalf("Error creating dynamic client: %v", err)
+	// }
+
+	// custom resource client
+	CRclient, err := platformv1alpha1.NewForConfig(config)
 	if err != nil {
 		log.Fatalf("Error creating dynamic client: %v", err)
 	}
@@ -39,7 +46,7 @@ func main() {
 
 	scheme := runtime.NewScheme()
 
-	ctrl := controller.NewController(clientset, dynamicClient, podInformer, nsInformer, enforcer, scheme)
+	ctrl := controller.NewController(clientset, CRclient, podInformer, nsInformer, enforcer, scheme)
 
 	stopCh := make(chan struct{})
 	sigterm := make(chan os.Signal, 1)

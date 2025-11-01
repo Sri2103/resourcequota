@@ -15,10 +15,11 @@ type ResourceQuotaPolicySpec struct {
 
 // ResourceQuotaPolicyStatus defines observed usage
 type ResourceQuotaPolicyStatus struct {
-	CurrentPods int      `json:"currentPods,omitempty"`
-	CPUUsage    string   `json:"cpuUsage,omitempty"`
-	MemoryUsage string   `json:"memoryUsage,omitempty"`
-	Violations  []string `json:"violations,omitempty"`
+	CurrentPods int    `json:"currentPods,omitempty"`
+	CPUUsage    string `json:"cpuUsage,omitempty"`
+	MemoryUsage string `json:"memoryUsage,omitempty"`
+	Violation   bool   `json:"violations,omitempty"`
+	Message     string `json:"message,omitempty"`
 }
 
 // +genclient

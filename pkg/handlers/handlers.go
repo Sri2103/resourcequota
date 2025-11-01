@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/sri2103/resource-quota-enforcer/pkg/apis/platform/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,7 +32,7 @@ type EnforcementResult struct {
 
 // PodEnforcer enforces policies per namespace.
 type PodEnforcer struct {
-	Client      *kubernetes.Clientset
+	Client      kubernetes.Interface
 	PolicyCache map[string]Policy // namespace → policy
 }
 
@@ -176,21 +177,21 @@ func (r EnforcementResult) Reason() string {
 	return ""
 }
 
-func ParsePolicy(spec map[string]interface{}) Policy {
+func ParsePolicy(spec *v1alpha1.ResourceQuotaPolicySpec) Policy {
 	maxPods := 10
 	maxCPU := resource.MustParse("2")
 	maxMem := resource.MustParse("2Gi")
 
-	if v, ok := spec["maxPods"].(int64); ok {
-		maxPods = int(v)
+	if pods := spec.MaxPods; pods != 0 {
+		maxPods = int(pods)
 	}
-	if v, ok := spec["maxCPU"].(string); ok {
+	if v := spec.MaxCPU; v != "" {
 		q, err := resource.ParseQuantity(v)
 		if err == nil {
 			maxCPU = q
 		}
 	}
-	if v, ok := spec["maxMemory"].(string); ok {
+	if v := spec.MaxMemory; v != "" {
 		q, err := resource.ParseQuantity(v)
 		if err == nil {
 			maxMem = q

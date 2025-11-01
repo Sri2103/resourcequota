@@ -7,7 +7,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-func NewNamespaceInformer(clientset *kubernetes.Clientset) informers.SharedInformerFactory {
+func NewNamespaceInformer(clientset kubernetes.Interface) informers.SharedInformerFactory {
 	factory := informers.NewSharedInformerFactory(clientset, 30*time.Second)
 	return factory
 }

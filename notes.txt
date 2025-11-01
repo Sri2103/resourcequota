@@ -55,15 +55,7 @@ informer-gen -v 5 `
   "github.com/sri2103/resource-quota-enforcer/pkg/apis/platform/v1alpha1"
     
 
-docker run --rm -v ${PWD}:/workspace -w /workspace golang:1.23 bash -c '
-  go install k8s.io/code-generator/cmd/{client-gen,informer-gen,lister-gen,deepcopy-gen}@latest
-  bash hack/update-codegen.sh
-'
 
-docker run --rm -v ${PWD}:/workspace -w /workspace golang:1.24 bash -c '
-  go install k8s.io/code-generator/cmd/...@latest
-  bash hack/update-codegen.sh
-'
 
 
 
