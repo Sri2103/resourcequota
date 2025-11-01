@@ -5,25 +5,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sri2103/resource-quota-enforcer/pkg/apis/platform/v1alpha1"
+	fake "github.com/sri2103/resource-quota-enforcer/pkg/generated/clientset/versioned/fake"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic/fake"
 )
 
 func TestInformerPolicyCache_GetAndReady(t *testing.T) {
 	scheme := runtime.NewScheme()
 	// Use fake dynamic client
-	gen := fake.NewSimpleDynamicClient(scheme)
+	fake.AddToScheme(scheme)
+	// gen := fake.NewSimpleDynamicClient(scheme)
+	gen := fake.NewSimpleClientset()
 
-	gvr := schema.GroupVersionResource{
-		Group:    "platform.example.com",
-		Version:  "v1alpha1",
-		Resource: "resourcequotapolicies",
-	}
-
-	cache := NewInformerPolicyCache(gen, gvr, 10*time.Second)
+	cache := NewTypedPolicyCache(gen, 10*time.Second)
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 	go cache.Run(stopCh)
@@ -33,23 +28,20 @@ func TestInformerPolicyCache_GetAndReady(t *testing.T) {
 		t.Fatalf("cache not ready: %v", err)
 	}
 
-	// create a policy in fake client
-	obj := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "platform.example.com/v1alpha1",
-			"kind":       "ResourceQuotaPolicy",
-			"metadata": map[string]interface{}{
-				"name":      "p1",
-				"namespace": "ns1",
-			},
-			"spec": map[string]interface{}{
-				"maxPods":   int64(2),
-				"maxCPU":    "500m",
-				"maxMemory": "256Mi",
-			},
+
+	obj := v1alpha1.ResourceQuotaPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "ps1",
+			Namespace: "ns1",
+		},
+		Spec: v1alpha1.ResourceQuotaPolicySpec{
+			MaxPods:   2,
+			MaxCPU:    "500m",
+			MaxMemory: "256Mi",
 		},
 	}
-	_, err := gen.Resource(gvr).Namespace("ns1").Create(context.TODO(), obj, metav1.CreateOptions{})
+
+	_, err := gen.PlatformV1alpha1().ResourceQuotaPolicies("ns1").Create(context.TODO(), &obj, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("create policy failed: %v", err)
 	}
@@ -61,7 +53,7 @@ func TestInformerPolicyCache_GetAndReady(t *testing.T) {
 	if !found {
 		t.Fatalf("expected policy found in cache")
 	}
-	if _, ok := spec["maxPods"]; !ok {
+	if spec == nil || spec.MaxPods == 0 {
 		t.Fatalf("spec missing maxPods")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/sri2103/resource-quota-enforcer/pkg/apis/platform/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -25,7 +26,10 @@ func TestEvaluatePodAgainstPolicy_PodsLimit(t *testing.T) {
 
 	srv := &WebhookServer{Clientset: cs}
 	// policy: maxPods = 2
-	spec := map[string]interface{}{"maxPods": int64(2)}
+	// spec := map[string]interface{}{"maxPods": int64(2)}
+	spec := v1alpha1.ResourceQuotaPolicySpec{
+		MaxPods: 2,
+	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "new-pod", Namespace: ns},
 		Spec: corev1.PodSpec{
@@ -43,7 +47,7 @@ func TestEvaluatePodAgainstPolicy_PodsLimit(t *testing.T) {
 			},
 		},
 	}
-	allowed, reason, err := srv.evaluatePodAgainstPolicy(context.TODO(), pod, ns, spec)
+	allowed, reason, err := srv.evaluatePodAgainstPolicy(context.TODO(), pod, ns, &spec)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}

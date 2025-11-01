@@ -5,51 +5,51 @@ import (
 	"sync"
 	"time"
 
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
-	dyninformers "k8s.io/client-go/dynamic/dynamicinformer"
+	platformv1alpha1 "github.com/sri2103/resource-quota-enforcer/pkg/apis/platform/v1alpha1"
+	clientset "github.com/sri2103/resource-quota-enforcer/pkg/generated/clientset/versioned"
+	informers "github.com/sri2103/resource-quota-enforcer/pkg/generated/informers/externalversions"
+	listers "github.com/sri2103/resource-quota-enforcer/pkg/generated/listers/platform/v1alpha1"
+
 	"k8s.io/client-go/tools/cache"
 )
 
-// PolicyCacheIF defines the methods the controller/webhook will use.
+// PolicyCacheIF defines the methods used by the webhook.
 type PolicyCacheIF interface {
-	Get(namespace string) (map[string]interface{}, bool)
+	Get(namespace string) (*platformv1alpha1.ResourceQuotaPolicySpec, bool)
 	Invalidate(namespace string)
 	Run(stopCh <-chan struct{})
+	WaitForReady(timeout time.Duration) error
 }
 
-// InformerPolicyCache implements PolicyCacheIF using a dynamic informer + lister.
-type InformerPolicyCache struct {
-	gvr       schema.GroupVersionResource
-	dynClient dynamic.Interface
-	factory   dyninformers.DynamicSharedInformerFactory
-	informer  cache.SharedIndexInformer
-	store     cache.Indexer
-	mtx       sync.RWMutex
-	ready     bool
-	readyMtx  sync.RWMutex
+// TypedPolicyCache uses generated informer + lister.
+type TypedPolicyCache struct {
+	client   clientset.Interface
+	factory  informers.SharedInformerFactory
+	informer cache.SharedIndexInformer
+	lister   listers.ResourceQuotaPolicyLister
+	mtx      sync.RWMutex
+	ready    bool
+	readyMtx sync.RWMutex
 }
 
-// NewInformerPolicyCache constructs the informer-backed cache.
-// resync is the resync period for the informer factory.
-func NewInformerPolicyCache(dyn dynamic.Interface, gvr schema.GroupVersionResource, resync time.Duration) *InformerPolicyCache {
-	factory := dyninformers.NewDynamicSharedInformerFactory(dyn, resync)
-	informer := factory.ForResource(gvr).Informer()
-	return &InformerPolicyCache{
-		gvr:       gvr,
-		dynClient: dyn,
-		factory:   factory,
-		informer:  informer,
-		store:     informer.GetIndexer(),
+// NewTypedPolicyCache constructs the informer-backed cache.
+func NewTypedPolicyCache(client clientset.Interface, resync time.Duration) *TypedPolicyCache {
+	factory := informers.NewSharedInformerFactory(client, resync)
+	informer := factory.Platform().V1alpha1().ResourceQuotaPolicies().Informer()
+	lister := factory.Platform().V1alpha1().ResourceQuotaPolicies().Lister()
+
+	return &TypedPolicyCache{
+		client:   client,
+		factory:  factory,
+		informer: informer,
+		lister:   lister,
 	}
 }
 
 // Run starts the informer factory and waits for cache sync.
-func (pc *InformerPolicyCache) Run(stopCh <-chan struct{}) {
+func (pc *TypedPolicyCache) Run(stopCh <-chan struct{}) {
 	pc.factory.Start(stopCh)
 	if ok := cache.WaitForCacheSync(stopCh, pc.informer.HasSynced); !ok {
-		// if sync failed, we'll leave ready as false
 		return
 	}
 	pc.readyMtx.Lock()
@@ -58,9 +58,8 @@ func (pc *InformerPolicyCache) Run(stopCh <-chan struct{}) {
 	<-stopCh
 }
 
-// Get returns the spec map for a namespace. If multiple policies exist, pick the first.
-// Returns (spec, found)
-func (pc *InformerPolicyCache) Get(namespace string) (map[string]interface{}, bool) {
+// Get retrieves the ResourceQuotaPolicy spec for a namespace.
+func (pc *TypedPolicyCache) Get(namespace string) (*platformv1alpha1.ResourceQuotaPolicySpec, bool) {
 	pc.readyMtx.RLock()
 	if !pc.ready {
 		pc.readyMtx.RUnlock()
@@ -68,39 +67,28 @@ func (pc *InformerPolicyCache) Get(namespace string) (map[string]interface{}, bo
 	}
 	pc.readyMtx.RUnlock()
 
-	// list keys in store filtered by namespace
-	// the store contains unstructured.Unstructured objects
-	objects := pc.store.List()
-	for _, obj := range objects {
-		if u, ok := obj.(*unstructured.Unstructured); ok {
-			if u.GetNamespace() != namespace {
-				continue
-			}
-			if spec, found, _ := unstructured.NestedMap(u.Object, "spec"); found {
-				return spec, true
-			}
-			// if object found but no spec, treat as not found
-		}
+	// list all policies in the namespace
+	policies, err := pc.lister.ResourceQuotaPolicies(namespace).List(nil)
+	if err != nil || len(policies) == 0 {
+		return nil, false
 	}
-	return nil, false
+
+	// return first policy's spec
+	return &policies[0].Spec, true
 }
 
-// Invalidate is a no-op for informer cache but provided to satisfy interface.
-// Optionally we could remove items from store, but informer will refresh on CR update.
-func (pc *InformerPolicyCache) Invalidate(namespace string) {
-	// no-op since informer updates store on CR changes
-	// we keep a hook in case you want to implement manual eviction
-}
+// Invalidate — optional hook (no-op)
+func (pc *TypedPolicyCache) Invalidate(namespace string) {}
 
-// Helper: returns if cache is ready
-func (pc *InformerPolicyCache) Ready() bool {
+// Ready helper
+func (pc *TypedPolicyCache) Ready() bool {
 	pc.readyMtx.RLock()
 	defer pc.readyMtx.RUnlock()
 	return pc.ready
 }
 
-// Utility: await readiness with timeout (useful in tests)
-func (pc *InformerPolicyCache) WaitForReady(timeout time.Duration) error {
+// WaitForReady — waits until cache is synced or timeout occurs.
+func (pc *TypedPolicyCache) WaitForReady(timeout time.Duration) error {
 	t := time.After(timeout)
 	tick := time.Tick(100 * time.Millisecond)
 	for {

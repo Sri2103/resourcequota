@@ -10,9 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sri2103/resource-quota-enforcer/pkg/generated/clientset/versioned"
 	"github.com/sri2103/resource-quota-enforcer/pkg/webhook"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -49,20 +48,15 @@ func main() {
 		log.Fatalf("kubernetes clientset: %v", err)
 	}
 
-	dyn, err := dynamic.NewForConfig(cfg)
+	dyn, err := versioned.NewForConfig(cfg)
 	if err != nil {
-		log.Fatalf("dynamic client: %v", err)
+		log.Fatalf("CR client: %v", err)
 	}
 
 	// GVR for ResourceQuotaPolicy (user confirmed)
-	gvr := schema.GroupVersionResource{
-		Group:    "platform.example.com",
-		Version:  "v1alpha1",
-		Resource: "resourcequotapolicies",
-	}
 
 	// informer-based cache
-	policyCache := webhook.NewInformerPolicyCache(dyn, gvr, resync)
+	policyCache := webhook.NewTypedPolicyCache(dyn, resync)
 
 	// start informer factory in background
 	stopCh := make(chan struct{})
@@ -74,7 +68,7 @@ func main() {
 	}
 
 	// create server
-	server := webhook.NewWebhookServerWithInformer(dyn, cs, policyCache, gvr)
+	server := webhook.NewWebhookServerWithInformer(dyn, cs, policyCache)
 
 	// HTTP handlers
 	mux := http.NewServeMux()

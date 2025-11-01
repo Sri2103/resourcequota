@@ -5,19 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/sri2103/resource-quota-enforcer/pkg/apis/platform/v1alpha1"
+	"github.com/sri2103/resource-quota-enforcer/pkg/generated/clientset/versioned"
 
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -48,22 +47,20 @@ func init() {
 }
 
 type WebhookServer struct {
-	DynClient dynamic.Interface
+	DynClient versioned.Interface
 	Clientset kubernetes.Interface
 	Decoder   runtime.Decoder
 	Cache     PolicyCacheIF
-	GVR       schema.GroupVersionResource
 }
 
 // NewWebhookServerWithInformer creates a server wired to a PolicyCacheIF (informer-based).
-func NewWebhookServerWithInformer(dyn dynamic.Interface, cs *kubernetes.Clientset, cache PolicyCacheIF, gvr schema.GroupVersionResource) *WebhookServer {
+func NewWebhookServerWithInformer(dyn versioned.Interface, cs kubernetes.Interface, cache PolicyCacheIF) *WebhookServer {
 	scheme := serializer.NewCodecFactory(nil).UniversalDeserializer()
 	return &WebhookServer{
 		DynClient: dyn,
 		Clientset: cs,
 		Decoder:   scheme,
 		Cache:     cache,
-		GVR:       gvr,
 	}
 }
 
@@ -159,35 +156,10 @@ func (s *WebhookServer) InvalidateHandler(w http.ResponseWriter, r *http.Request
 
 // evaluatePodAgainstPolicy computes current usage and includes the new pod's requests.
 // returns allowed(bool), reason(string), error
-func (s *WebhookServer) evaluatePodAgainstPolicy(ctx context.Context, pod *corev1.Pod, namespace string, spec map[string]interface{}) (bool, string, error) {
-	// parse policy fields similar to ParsePolicy
-	maxPods := 0
-	if v, ok := spec["maxPods"]; ok {
-		switch t := v.(type) {
-		case int64:
-			maxPods = int(t)
-		case float64:
-			maxPods = int(t)
-		case string:
-			if n, err := strconv.Atoi(t); err == nil {
-				maxPods = n
-			}
-		case int:
-			maxPods = t
-		}
-	}
-	maxCPU := resource.MustParse("0")
-	if v, ok := spec["maxCPU"].(string); ok && v != "" {
-		if q, err := resource.ParseQuantity(v); err == nil {
-			maxCPU = q
-		}
-	}
-	maxMem := resource.MustParse("0")
-	if v, ok := spec["maxMemory"].(string); ok && v != "" {
-		if q, err := resource.ParseQuantity(v); err == nil {
-			maxMem = q
-		}
-	}
+func (s *WebhookServer) evaluatePodAgainstPolicy(ctx context.Context, pod *corev1.Pod, namespace string, spec *v1alpha1.ResourceQuotaPolicySpec) (bool, string, error) {
+	maxPods := spec.MaxPods
+	maxCPU := resource.MustParse(spec.MaxCPU)
+	maxMem := resource.MustParse(spec.MaxMemory)
 
 	// list existing pods using clientset
 	pods, err := s.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
