@@ -10,75 +10,70 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sri2103/resource-quota-enforcer/pkg/generated/clientset/versioned"
+	"github.com/sri2103/resource-quota-enforcer/pkg/client"
+	clientset "github.com/sri2103/resource-quota-enforcer/pkg/generated/clientset/versioned"
 	"github.com/sri2103/resource-quota-enforcer/pkg/webhook"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 func main() {
-	var kubeconfig string
 	var tlsCertFile string
 	var tlsKeyFile string
 	var listenAddr string
 	var resync time.Duration
 
-	flag.StringVar(&kubeconfig, "kubeconfig", "", "kubeconfig path (optional)")
-	flag.StringVar(&tlsCertFile, "tls-cert-file", "/tls/tls.crt", "tls cert")
-	flag.StringVar(&tlsKeyFile, "tls-key-file", "/tls/tls.key", "tls key")
-	flag.StringVar(&listenAddr, "listen", ":8443", "listen address")
-	flag.DurationVar(&resync, "resync", 30*time.Second, "informer resync period")
+	flag.StringVar(&tlsCertFile, "tls-cert-file", "./certs/server.crt", "Path to TLS certificate")
+	flag.StringVar(&tlsKeyFile, "tls-key-file", "./certs/server.key", "Path to TLS private key")
+	flag.StringVar(&listenAddr, "listen", ":8443", "Webhook server listen address")
+	flag.DurationVar(&resync, "resync", 30*time.Second, "Informer resync period")
 	flag.Parse()
 
-	// build kube config
-	var cfg *rest.Config
-	var err error
-	if kubeconfig != "" {
-		cfg, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
-	} else {
-		cfg, err = rest.InClusterConfig()
-	}
+	cfg, err := client.PrepareConfig()
 	if err != nil {
-		log.Fatalf("build config: %v", err)
+		log.Fatalf("[Main] ❌ Failed to build kubeconfig: %v", err)
 	}
 
-	cs, err := kubernetes.NewForConfig(cfg)
+	cs, err := client.GetKubernetesClient(cfg)
 	if err != nil {
-		log.Fatalf("kubernetes clientset: %v", err)
+		log.Fatalf("[Main] ❌ Failed to create core clientset: %v", err)
 	}
 
-	dyn, err := versioned.NewForConfig(cfg)
+	typedClient, err := clientset.NewForConfig(cfg)
 	if err != nil {
-		log.Fatalf("CR client: %v", err)
+		log.Fatalf("[Main] ❌ Failed to create typed clientset: %v", err)
 	}
 
-	// GVR for ResourceQuotaPolicy (user confirmed)
+	webhook.InitMetrics()
 
-	// informer-based cache
-	policyCache := webhook.NewTypedPolicyCache(dyn, resync)
+	// Create informer-based cache
+	policyCache := webhook.NewTypedPolicyCache(typedClient, resync)
 
-	// start informer factory in background
+	// Start informer factory
 	stopCh := make(chan struct{})
 	go policyCache.Run(stopCh)
 
-	// wait for cache ready or timeout
-	if err := policyCache.WaitForReady(10 * time.Second); err != nil {
-		log.Printf("policy cache not ready in time: %v (continuing; cache misses possible)", err)
+	// Wait for cache sync
+	if err := policyCache.WaitForReady(30 * time.Second); err != nil {
+		log.Printf("[Main] ⚠️ Policy cache not ready in time: %v (continuing; cache misses possible)", err)
+	} else {
+		log.Println("[Main] ✅ Policy cache ready")
 	}
 
-	// create server
-	server := webhook.NewWebhookServerWithInformer(dyn, cs, policyCache)
+	// Create webhook server
+	server := webhook.NewWebhookServerWithInformer(cs, policyCache)
 
-	// HTTP handlers
+	// Routes
 	mux := http.NewServeMux()
-	mux.HandleFunc("/validate-pods", server.HandleValidatePods)
+	mux.HandleFunc("/validate", server.HandleValidatePods)
 	mux.HandleFunc("/invalidate", server.InvalidateHandler)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
 	mux.Handle("/metrics", webhook.MetricsHandler())
 
+	// TLS setup
 	cert, err := tls.LoadX509KeyPair(tlsCertFile, tlsKeyFile)
 	if err != nil {
-		log.Fatalf("load cert/key: %v", err)
+		log.Fatalf("[Main] ❌ Failed to load cert/key: %v", err)
 	}
 	tlsCfg := &tls.Config{
 		Certificates: []tls.Certificate{cert},
@@ -91,19 +86,19 @@ func main() {
 		TLSConfig: tlsCfg,
 	}
 
-	// graceful shutdown wiring
+	// Graceful shutdown
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("starting webhook server on %s", listenAddr)
+		log.Printf("[Main] 🚀 Starting webhook server on %s", listenAddr)
 		if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("webhook server failed: %v", err)
+			log.Fatalf("[Main] ❌ Webhook server failed: %v", err)
 		}
 	}()
 
 	<-sigCh
-	log.Println("shutting down webhook server")
+	log.Println("[Main] 📴 Shutting down webhook server")
 	close(stopCh)
 	_ = srv.Close()
 }

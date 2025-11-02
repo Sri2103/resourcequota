@@ -1,0 +1,53 @@
+{
+  "id": null,
+  "uid": "rqe-dashboard",
+  "title": "Resource Quota Enforcer Metrics",
+  "timezone": "browser",
+  "schemaVersion": 36,
+  "version": 1,
+  "refresh": "5s",
+  "panels": [
+    {
+      "type": "graph",
+      "title": "Admission Requests (per namespace)",
+      "targets": [
+        {
+          "expr": "sum by(namespace, result) (rqe_admission_requests_total)",
+          "legendFormat": "{{namespace}} - {{result}}"
+        }
+      ],
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 }
+    },
+    {
+      "type": "graph",
+      "title": "Admission Violations (per reason)",
+      "targets": [
+        {
+          "expr": "sum by(namespace, reason) (rqe_admission_violations_total)",
+          "legendFormat": "{{namespace}} - {{reason}}"
+        }
+      ],
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 }
+    },
+    {
+      "type": "graph",
+      "title": "Policy Cache Hits vs Misses",
+      "targets": [
+        { "expr": "rqe_policy_cache_hits_total", "legendFormat": "hits" },
+        { "expr": "rqe_policy_cache_misses_total", "legendFormat": "misses" }
+      ],
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 }
+    },
+    {
+      "type": "graph",
+      "title": "Go Runtime Memory (Webhook/Controller)",
+      "targets": [
+        {
+          "expr": "go_memstats_alloc_bytes",
+          "legendFormat": "{{job}}"
+        }
+      ],
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 }
+    }
+  ]
+}

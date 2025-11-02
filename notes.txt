@@ -1,62 +1,7 @@
-// client-gen
 
-client-gen -v 5 `
---go-header-file "hack/boiler-plate.go.txt" `
---output-dir "./pkg/generated/clientset" `
---output-pkg "github.com/sri2103/resource-quota-enforcer/pkg/generated/clientset"  `
---input-base "github.com/sri2103/resource-quota-enforcer/pkg/apis/" `
---clientset-name "versioned" `
---input "./platform/v1alpha1"    
-"." 
-
-
-register-gen `
--v 5 `
---output-file zz_generated.register.go `
---go-header-file "hack/boiler-plate.go.txt" `
-"./pkg/apis/platform/v1alpha1" 
-
-
-lister-gen -v 5 `
---go-header-file "hack/boiler-plate.go.txt" `
---output-dir "./pkg/generated/listers" `
---output-pkg "github.com/sri2103/resource-quota-enforcer/pkg/generated/listers" `
-./pkg/apis/platform/v1alpha1
-
-informer-gen -v 5 `
---go-header-file "hack/boiler-plate.go.txt" `
---output-dir pkg//generated//informers// `
---output-pkg "github.com/sri2103/resource-quota-enforcer/pkg/generated/informers" `
---versioned-clientset-package "github.com/sri2103/resource-quota-enforcer/pkg/generated/clientset/versioned" `
---listers-package "github.com/sri2103/resource-quota-enforcer/pkg/generated/listers" `
- --plural-exceptions "${plural_exceptions}" `
-./pkg/apis/platform/v1alpha1
-
-
-
-
-informer-gen -v 5 `
-  --go-header-file "hack\boiler-plate.go.txt" `
-  --output-dir "pkg\generated\informers" `
-  --output-pkg "github.com/sri2103/resource-quota-enforcer/pkg/generated/informers" `
-  --versioned-clientset-package "github.com/sri2103/resource-quota-enforcer/pkg/generated/clientset/versioned" `
-  --listers-package "github.com/sri2103/resource-quota-enforcer/pkg/generated/listers" `
-  --plural-exceptions "" `
-  "github.com/sri2103/resource-quota-enforcer/pkg/apis/platform/v1alpha1"
-
-
-
-informer-gen -v 5 `
-  --go-header-file "./hack/boiler-plate.go.txt" `
-  --output-dir "informers" `
-  --output-pkg "github.com/sri2103/resource-quota-enforcer/pkg/generated" `
-  --versioned-clientset-package "github.com/sri2103/resource-quota-enforcer/pkg/generated/clientset" `
-  --listers-package "github.com/sri2103/resource-quota-enforcer/pkg/generated/listers" `
-  "github.com/sri2103/resource-quota-enforcer/pkg/apis/platform/v1alpha1"
-    
-
-
-
-
-
+// clients and other code generator
 docker run --rm -v "${PWD}:/workspace" -w /workspace codegen:go1.24  hack/update-codegen.sh
+
+
+// docker to run and test the network connectivity
+kubectl run test --rm -it --image=curlimages/curl --restart=Never -- curl -vk https://host.minikube.internal:8443/healthz

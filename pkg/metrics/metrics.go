@@ -1,7 +1,10 @@
 package metrics
 
 import (
+	"net/http"
+
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var (
@@ -30,6 +33,10 @@ var (
 	)
 )
 
-func init() {
+func InitMetrics() {
 	prometheus.MustRegister(ReconcileTotal, ReconcileErrors, EnforcementActions)
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		http.ListenAndServe(":2112", nil)
+	}()
 }

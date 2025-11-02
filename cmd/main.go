@@ -15,6 +15,7 @@ import (
 	"github.com/sri2103/resource-quota-enforcer/pkg/handlers"
 	"github.com/sri2103/resource-quota-enforcer/pkg/health"
 	"github.com/sri2103/resource-quota-enforcer/pkg/informers"
+	"github.com/sri2103/resource-quota-enforcer/pkg/metrics"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -40,7 +41,6 @@ func main() {
 	podInformer := factory.Core().V1().Pods().Informer()
 	nsInformer := factory.Core().V1().Namespaces().Informer()
 
-
 	// enforcers to handle pod setups
 	enforcer := &handlers.PodEnforcer{
 		Client:      clientset,
@@ -55,6 +55,7 @@ func main() {
 	// end signals
 	sigterm := make(chan os.Signal, 1)
 	signal.Notify(sigterm, syscall.SIGINT, syscall.SIGTERM)
+	metrics.InitMetrics()
 
 	// run the controller and
 	go ctrl.Run(stopCh, 5)
@@ -87,4 +88,7 @@ func startHealthAndMetrics() {
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Error running metrics server: %v", err)
 	}
+}
+
+func StartMetrics() {
 }
