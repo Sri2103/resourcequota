@@ -64,7 +64,7 @@ func main() {
 	// Routes
 	mux := http.NewServeMux()
 	mux.HandleFunc("/validate", server.HandleValidatePods)
-	mux.HandleFunc("/invalidate", server.InvalidateHandler)
+	mux.HandleFunc("/mutate", server.InvalidateHandler)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})

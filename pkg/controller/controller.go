@@ -204,7 +204,7 @@ func (c *Controller) processNextItem() bool {
 
 	// Successful reconciliation
 	c.queue.Forget(ns)
-	klog.Infof("successfully synced namespace %q", ns)
+	// klog.Infof("successfully synced namespace %q", ns)
 	return true
 }
 

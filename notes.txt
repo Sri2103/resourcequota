@@ -5,3 +5,12 @@ docker run --rm -v "${PWD}:/workspace" -w /workspace codegen:go1.24  hack/update
 
 // docker to run and test the network connectivity
 kubectl run test --rm -it --image=curlimages/curl --restart=Never -- curl -vk https://host.minikube.internal:8443/healthz
+
+
+
+// adding a label to a namespace existing already
+kubectl label namespace test-ns webhook=enabled
+
+
+// removing a label to a namespace existing already
+kubectl label namespace test-ns webhook-
