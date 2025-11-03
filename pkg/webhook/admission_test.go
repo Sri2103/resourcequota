@@ -2,6 +2,7 @@ package webhook
 
 import (
 	"context"
+	"strconv"
 	"testing"
 
 	"github.com/sri2103/resource-quota-enforcer/pkg/apis/platform/v1alpha1"
@@ -17,7 +18,7 @@ func TestEvaluatePodAgainstPolicy_PodsLimit(t *testing.T) {
 	ns := "test-ns"
 	for i := 0; i < 2; i++ {
 		_, _ = cs.CoreV1().Pods(ns).Create(context.TODO(), &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{Name: "p" + string('0'+i), Namespace: ns},
+			ObjectMeta: metav1.ObjectMeta{Name: "p" + strconv.Itoa('0'+i), Namespace: ns},
 			Spec: corev1.PodSpec{
 				Containers: []corev1.Container{{Name: "c", Image: "busybox"}},
 			},
